@@ -1,19 +1,16 @@
-#!/usr/bin/env swift
-
 //
 //  applei-cli.swift
 //  Applei-CLI
 //
 //  CLI tool for Apple Intelligence using FoundationModels framework
-//  Based on the working ChatManager implementation
 //
 //  Usage:
-//    ./applei-cli.swift "Your prompt here"           # Single query mode
-//    ./applei-cli.swift --interactive                # Interactive mode
-//    ./applei-cli.swift --model general "Prompt"     # Specify model
-//    ./applei-cli.swift --temperature 0.8 "Prompt"   # Set temperature
+//    ./applei-cli "Your prompt here"           # Single query mode
+//    ./applei-cli --interactive                # Interactive mode
+//    ./applei-cli --model general "Prompt"     # Specify model
+//    ./applei-cli --temperature 0.8 "Prompt"   # Set temperature
 //
-//  Build instructions (for compiled binary):
+//  Build instructions:
 //    swiftc -o applei-cli applei-cli.swift -framework FoundationModels -framework Foundation
 //    chmod +x applei-cli
 //
@@ -28,6 +25,7 @@ struct CLIConfig {
     var temperature: Double = 0.7
     var maxTokens: Int? = nil
     var interactive: Bool = false
+    var fetchUrl: String? = nil
     var systemInstructions: String = """
     You are a helpful AI assistant running in a CLI environment. Provide clear, concise answers.
     Keep responses focused and practical. Be accurate and acknowledge uncertainty when appropriate.
@@ -55,6 +53,7 @@ class AppleiCLI {
     private var model: SystemLanguageModel
     private var config: CLIConfig
     private var messageCount: Int = 0
+    private var recentMessages: [(role: String, content: String)] = []  // Keep last 10 messages
 
     init(config: CLIConfig) {
         self.config = config
@@ -67,7 +66,11 @@ class AppleiCLI {
 
         switch availability {
         case .available:
-            session = LanguageModelSession(instructions: config.systemInstructions)
+            session = LanguageModelSession(
+                model: model,
+                tools: [],
+                instructions: config.systemInstructions
+            )
             // Prewarm session to reduce latency
             Task {
                 await prewarmSession()
@@ -89,7 +92,7 @@ class AppleiCLI {
 
     private func prewarmSession() async {
         guard let session = session else { return }
-        await session.prewarm(promptPrefix: nil)
+        session.prewarm(promptPrefix: nil)
     }
 
     // Single prompt mode
@@ -98,6 +101,9 @@ class AppleiCLI {
             printError("Session not initialized")
             return
         }
+
+        // Store user message in memory
+        storeMessage(role: "user", content: prompt)
 
         do {
             let options = GenerationOptions(temperature: config.temperature)
@@ -115,11 +121,14 @@ class AppleiCLI {
                 print(newContent, terminator: "")
                 fflush(stdout)
 
-                fullResponse = partial.content
+                fullResponse += newContent  // Accumulate properly
             }
 
             print("\n")
             messageCount += 2 // User + Assistant
+
+            // Store assistant response in memory
+            storeMessage(role: "assistant", content: fullResponse)
 
         } catch let error as LanguageModelSession.GenerationError {
             handleGenerationError(error)
@@ -128,12 +137,43 @@ class AppleiCLI {
         }
     }
 
+    // Store messages in memory (keep last 10 for context)
+    private func storeMessage(role: String, content: String) {
+        recentMessages.append((role: role, content: content))
+        // Keep only last 10 messages
+        if recentMessages.count > 10 {
+            recentMessages.removeFirst()
+        }
+    }
+
+    // Get conversation context (last 5 exchanges)
+    func getRecentContext() -> String {
+        guard !recentMessages.isEmpty else { return "" }
+        let last5 = Array(recentMessages.suffix(10))
+        return last5.map { "\($0.role): \($0.content)" }.joined(separator: "\n")
+    }
+
+    // Print current context for debugging
+    func printContext() {
+        printInfo("Recent conversation context (\(recentMessages.count) messages):")
+        for (index, msg) in recentMessages.enumerated() {
+            print("  \(index + 1). \(msg.role): \(msg.content.prefix(50))...")
+        }
+    }
+
     // Interactive mode
     func interactive() async {
         printInfo("Applei CLI - Interactive Mode")
-        printInfo("Type 'exit' or 'quit' to end session")
+        printInfo("Press Ctrl+C to exit or type 'exit'/'quit'")
         printInfo("Type 'clear' to reset conversation")
         printInfo("Type 'help' for commands\n")
+
+        // Handle Ctrl+C gracefully
+        signal(SIGINT) { _ in
+            print("\n")
+            print("\u{001B}[36m[INFO]\u{001B}[0m Goodbye!")
+            exit(0)
+        }
 
         while true {
             print("\n> ", terminator: "")
@@ -148,7 +188,11 @@ class AppleiCLI {
             }
 
             // Handle commands
-            switch input.lowercased() {
+            let parts = input.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            let command = parts.first.map(String.init).map { $0.lowercased() } ?? ""
+            let argument = parts.count > 1 ? String(parts[1]) : ""
+
+            switch command {
             case "exit", "quit":
                 printInfo("Goodbye!")
                 return
@@ -161,6 +205,22 @@ class AppleiCLI {
                 continue
             case "status":
                 printStatus()
+                continue
+            case "context":
+                printContext()
+                continue
+            case "fetch":
+                if argument.isEmpty {
+                    printWarning("Usage: fetch <url>")
+                    continue
+                }
+                printInfo("Fetching \(argument)...")
+                if let content = fetchWebContent(argument) {
+                    let preview = String(content.prefix(200))
+                    printInfo("Fetched \(content.count) characters")
+                    let analysisPrompt = "Please analyze this web content and provide a summary:\n\n\(content)"
+                    await query(analysisPrompt)
+                }
                 continue
             default:
                 break
@@ -186,13 +246,48 @@ class AppleiCLI {
         print("""
 
         Available Commands:
-          help       - Show this help message
-          status     - Show current session status
-          clear      - Clear conversation history
-          exit/quit  - Exit interactive mode
+          help              - Show this help message
+          status            - Show current session status
+          clear             - Clear conversation history
+          fetch <url>       - Fetch and analyze web content
+          exit/quit         - Exit interactive mode
 
         """)
     }
+
+    // MARK: - Web Content Fetching (SwiftFejs Integration)
+
+    func fetchWebContent(_ urlString: String) -> String? {
+        let swiftfejsPath = "/Users/denn/ML/Projecti/SwiftFejs/swiftfejs"
+
+        guard FileManager.default.fileExists(atPath: swiftfejsPath) else {
+            printWarning("SwiftFejs not found at \(swiftfejsPath)")
+            return nil
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: swiftfejsPath)
+        process.arguments = [urlString, "--mode", "text", "--timeout", "15"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let content = String(data: data, encoding: .utf8) {
+                return content
+            }
+        } catch {
+            printError("Failed to fetch URL: \(error.localizedDescription)")
+        }
+
+        return nil
+    }
+
 
     private func handleGenerationError(_ error: LanguageModelSession.GenerationError) {
         switch error {
@@ -207,6 +302,30 @@ class AppleiCLI {
             }
 
             messageCount = 0
+
+        case .refusal(_, _):
+            printWarning("Model refused to generate response")
+
+        case .assetsUnavailable:
+            printError("Required assets are unavailable")
+
+        case .guardrailViolation:
+            printWarning("Response violated safety guardrails")
+
+        case .unsupportedGuide:
+            printError("Unsupported generation guide specified")
+
+        case .unsupportedLanguageOrLocale:
+            printError("Unsupported language or locale")
+
+        case .decodingFailure:
+            printError("Failed to decode model response")
+
+        case .rateLimited:
+            printWarning("API rate limit exceeded. Please retry later")
+
+        case .concurrentRequests:
+            printWarning("Too many concurrent requests. Please wait")
 
         @unknown default:
             printError("Unexpected generation error occurred")
@@ -295,6 +414,15 @@ struct ArgumentParser {
                     i += 1
                 }
 
+            case "--fetch-url":
+                if i + 1 < args.count {
+                    config.fetchUrl = args[i + 1]
+                    i += 2
+                } else {
+                    fputs("--fetch-url requires a URL\n", stderr)
+                    i += 1
+                }
+
             case "--help", "-h":
                 printUsage()
                 exit(0)
@@ -321,28 +449,33 @@ struct ArgumentParser {
         Usage:
           applei-cli [options] "prompt"           Single query mode
           applei-cli --interactive                Interactive mode
+          applei-cli --fetch-url <url> "analyze"  Fetch and analyze web content
+          applei-cli --ask-gemini "question"      Ask Gemini a question
 
         Options:
           -i, --interactive              Start interactive mode
           -m, --model <model>            Select model (general, contentTagging)
           -t, --temperature <value>      Set temperature (0.0-1.0, default: 0.7)
           -s, --system <instructions>    Custom system instructions
+          --fetch-url <url>              Fetch web content via SwiftFejs
           -h, --help                     Show this help message
 
         Examples:
           applei-cli "What is Swift?"
-          applei-cli --model general --temperature 0.8 "Explain closures"
+          applei-cli --fetch-url "https://example.com" "summarize this"
           applei-cli --interactive
 
-        Build Instructions:
-          For script execution:
-            chmod +x applei-cli.swift
-            ./applei-cli.swift "Your prompt"
+        Interactive Mode Commands:
+          fetch <url>                    Fetch and analyze web content
+          context                        Show recent conversation context
+          clear                          Reset conversation
+          status                         Show session info
+          help                           Show available commands
+          exit/quit                      Exit
 
-          For compiled binary:
-            swiftc -o applei-cli applei-cli.swift -framework FoundationModels -framework Foundation
-            chmod +x applei-cli
-            ./applei-cli "Your prompt"
+        Integration Features:
+          - SwiftFejs: Fetch and analyze web content (via --fetch-url or fetch command)
+          - FoundationModels: Apple Intelligence on-device LLM
 
         Note: Requires macOS 15.1+ and Apple Intelligence enabled
 
@@ -361,6 +494,13 @@ struct Main {
 
         if config.interactive {
             await cli.interactive()
+        } else if let url = config.fetchUrl {
+            // Fetch URL mode
+            if let content = cli.fetchWebContent(url) {
+                let analysisPrompt = prompt ?? "Please analyze and summarize this web content."
+                let fullPrompt = "Web Content:\n\n\(content)\n\nAnalysis Request: \(analysisPrompt)"
+                await cli.query(fullPrompt)
+            }
         } else if let prompt = prompt {
             await cli.query(prompt)
         } else {

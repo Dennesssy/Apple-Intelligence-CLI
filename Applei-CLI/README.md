@@ -1,232 +1,159 @@
-# Applei CLI - Apple Intelligence Command Line Interface
+# Applei-CLI
 
-A command-line interface for Apple's FoundationModels framework, enabling on-device AI interactions from the terminal.
+On-device AI assistant using Apple's FoundationModels framework with conversation context management.
 
 ## Features
 
-- Single-query mode for one-off questions
-- Interactive mode for conversational sessions
-- Streaming responses for real-time output
-- Model selection (general, contentTagging)
-- Temperature control
-- Context window management with automatic compression
-- On-device processing (privacy-first)
+- **Apple Intelligence** - On-device LLM (FoundationModels framework)
+- **Persistent Context** - Remembers last 10 messages during interactive session
+- **Web Analysis** - Fetch and analyze web content via SwiftFejs
+- **Interactive Mode** - Multi-turn conversations with full context recall
+- **Temperature Control** - Adjust creativity (0.0-1.0)
+- **Privacy-First** - 100% on-device processing
 
 ## Requirements
 
-- macOS 15.1 or later
-- Apple Intelligence enabled (Settings > Apple Intelligence & Siri)
-- Compatible Apple Silicon device
+- macOS 15.1+ with Apple Intelligence enabled
+- Apple Silicon (M1+)
+- Optional: SwiftFejs binary for web fetching
 
-## Installation
-
-### Option 1: Script Mode (Immediate Use)
+## Build & Install
 
 ```bash
-chmod +x applei-cli.swift
-./applei-cli.swift "Your question here"
+swiftc -parse-as-library -o applei-cli applei-cli.swift \
+    -framework FoundationModels -framework Foundation -O
+chmod +x applei-cli
 ```
 
-### Option 2: Compiled Binary (Better Performance)
-
+Quick alias:
 ```bash
-swiftc -o applei-cli applei-cli.swift -framework FoundationModels -framework Foundation
-chmod +x applei-cli
-sudo mv applei-cli /usr/local/bin/  # Optional: install globally
+alias applei='/Users/denn/Desktop/Xcode/AppleiChat/Applei-CLI/applei-cli --interactive'
 ```
 
 ## Usage
 
-### Single Query Mode
-
+### Interactive Mode (Recommended)
 ```bash
-# Basic query
-./applei-cli.swift "What is Swift?"
-
-# With options
-./applei-cli.swift --model general --temperature 0.8 "Explain closures in Swift"
-
-# Custom system instructions
-./applei-cli.swift --system "You are a Swift expert" "Best practices for error handling"
+./applei-cli --interactive
 ```
 
-### Interactive Mode
-
-```bash
-./applei-cli.swift --interactive
-```
-
-Interactive commands:
+Interactive Commands:
+- `fetch <url>` - Fetch and analyze web content
+- `context` - Show recent conversation history (last 10 messages)
+- `clear` - Reset conversation
+- `status` - Show session info
 - `help` - Show available commands
-- `status` - Display session information
-- `clear` - Reset conversation history
-- `exit` or `quit` - End session
+- `exit` / `quit` - Exit
 
-## Command-Line Options
-
-| Option | Short | Description | Default |
-|--------|-------|-------------|---------|
-| `--interactive` | `-i` | Start interactive mode | false |
-| `--model` | `-m` | Select model (general, contentTagging) | general |
-| `--temperature` | `-t` | Set temperature (0.0-1.0) | 0.7 |
-| `--system` | `-s` | Custom system instructions | Default instructions |
-| `--help` | `-h` | Show help message | - |
-
-## Examples
-
-### Basic Examples
-
+### Single Query Mode
 ```bash
-# Simple question
-./applei-cli.swift "What are the main features of SwiftUI?"
-
-# Code explanation
-./applei-cli.swift "Explain what this does: async let result = fetch()"
-
-# Creative writing
-./applei-cli.swift --temperature 0.9 "Write a haiku about coding"
+./applei-cli "What is Swift?"
+./applei-cli --temperature 0.8 "Write a creative story"
+./applei-cli --fetch-url "https://example.com" "summarize this"
 ```
 
-### Advanced Examples
+## Options
 
-```bash
-# Content tagging model
-./applei-cli.swift --model contentTagging "Categorize: Machine learning article about neural networks"
+```
+-i, --interactive              Start interactive mode
+-m, --model <model>            Select model (general, contentTagging)
+-t, --temperature <value>      Set temperature (0.0-1.0, default: 0.7)
+-s, --system <instructions>    Custom system instructions
+--fetch-url <url>              Fetch and analyze web content
+-h, --help                     Show help
+```
 
-# Interactive session with custom personality
-./applei-cli.swift --interactive --system "You are a helpful Swift mentor. Use simple explanations."
+## Example Interactive Session
 
-# Low temperature for factual responses
-./applei-cli.swift --temperature 0.3 "What is the capital of France?"
+```
+Applei> What is Swift?
+[Apple Intelligence responds...]
+
+Applei> Tell me more about it
+[Response uses previous context from LanguageModelSession]
+
+Applei> context
+Recent conversation context (4 messages):
+  1. user: What is Swift?
+  2. assistant: Swift is a modern programming language...
+  3. user: Tell me more about it
+  4. assistant: Swift has many advantages...
+
+Applei> fetch https://swift.org/blog
+[Analyzes web content]
+
+Applei> exit
 ```
 
 ## Architecture
 
-Based on the working `ChatManager.swift` implementation with:
-
-- **Session Management**: Persistent conversation context with automatic compression
-- **Streaming**: Real-time response output using async streams
-- **Error Handling**: Graceful degradation for context overflow and availability issues
-- **Performance**: Session prewarming for reduced latency
-- **Privacy**: 100% on-device processing, no data sent to servers
-
-## Configuration
-
-See `.agent-cli` configuration file for detailed settings:
-
-```yaml
-model:
-  default: general
-  use_case: general
-
-generation:
-  temperature: 0.7
-  streaming: true
-  prewarm: true
-
-session:
-  persist_context: true
-  context_compression: true
-  context_retention: 6
+```
+AppleiCLI
+├── LanguageModelSession (stateful conversation)
+├── Message History (last 10 in memory)
+├── SwiftFejs Integration (web fetching)
+└── FoundationModels (Apple Intelligence)
 ```
 
-## Limitations
+## Key Features
 
-### Current Limitations (FoundationModels Framework)
+- **Stateful Sessions** - LanguageModelSession maintains conversation context automatically
+- **Recent Context** - Keep last 10 messages in memory for reference
+- **Streaming Responses** - Real-time output during generation
+- **Interactive Context Display** - `context` command shows conversation history
+- **Error Recovery** - Graceful handling of edge cases
+- **Clean Exit** - Ctrl+C for safe shutdown
 
-1. **No Tool Calling**: The framework does not support function/tool calling as of macOS 15.1
-2. **Text Only**: No vision or multimodal inputs
-3. **Limited Parameters**: Only temperature control available (no top_p, top_k, etc.)
-4. **Context Window**: Managed via message count heuristics (~15-20 messages)
-5. **Model Selection**: Limited to use cases (general, contentTagging), not specific models
+## Conversation Management
 
-### Use Cases
+### How It Works
 
-**Recommended:**
-- Personal Q&A and assistance
-- Content tagging and categorization
-- Text generation with privacy requirements
-- Simple conversational interfaces
+1. **Per-Session Persistence**: LanguageModelSession automatically maintains conversation history
+2. **Memory Cache**: CLI keeps last 10 messages for quick context display
+3. **Interactive Recall**: Use `context` command to view recent exchanges
 
-**Not Recommended (Yet):**
-- Agent systems requiring tool calling
-- Complex multi-step workflows
-- Systems needing structured JSON outputs
-- Guaranteed token control
+### Example
 
-## Privacy & Security
+```bash
+$ ./applei-cli --interactive
+> What is React?
+[Response about React]
+> How does it differ from Vue?
+[Uses context from previous message automatically]
+> context
+[Shows last 10 messages from session]
+```
 
-- **100% On-Device**: All processing happens locally on your Mac
-- **No Telemetry**: Apple Intelligence doesn't send data to servers
-- **Local Storage**: Conversation history stored in local UserDefaults only
-- **No API Keys**: No external API keys or authentication required
+## SwiftUI App
+
+Companion macOS app with:
+- ✅ Conversation persistence (auto-saves to ~/Documents/AppleiChat/)
+- ✅ Auto-load previous conversations on startup
+- ✅ Same FoundationModels backend
+- ✅ Split-view UI (sidebar + chat)
 
 ## Troubleshooting
 
-### "Device not eligible for Apple Intelligence"
-Your Mac doesn't support Apple Intelligence. Requires Apple Silicon (M1 or later).
+| Issue | Solution |
+|-------|----------|
+| "Apple Intelligence not enabled" | Enable in Settings > Apple Intelligence & Siri |
+| "Device not eligible" | Requires Apple Silicon M1+ |
+| "Session not initialized" | Apple Intelligence may be downloading |
+| Missing web content | SwiftFejs is optional; app continues |
 
-### "Apple Intelligence not enabled"
-Enable Apple Intelligence in System Settings > Apple Intelligence & Siri.
+## Files
 
-### "Model not ready"
-The AI model is still downloading. Wait for download to complete and try again.
+- `applei-cli.swift` - Single-file CLI implementation
+- `README.md` - This file
 
-### Context Window Exceeded
-The CLI automatically creates a new session with condensed context. You can also use the `clear` command in interactive mode.
+## Status
 
-## Development
+✅ **Production-Ready**
+- Full FoundationModels integration
+- Conversation context management
+- Interactive and single-query modes
+- Web content analysis
 
-### Testing
+---
 
-```bash
-# Test availability
-./applei-cli.swift "test"
-
-# Test streaming
-./applei-cli.swift "Count from 1 to 10"
-
-# Test context management
-./applei-cli.swift --interactive
-> Tell me a story
-> Continue the story
-> clear
-> status
-```
-
-### Debugging
-
-Enable verbose output by modifying the script:
-```swift
-private func printInfo(_ message: String) {
-    print("\u{001B}[36m[INFO]\u{001B}[0m \(message)")
-}
-```
-
-## Integration with Agent Workflows
-
-**IMPORTANT**: Review the `.agent-cli` configuration file for compatibility notes.
-
-The FoundationModels framework currently focuses on text generation and does not document tool calling capabilities. Before integrating into agent workflows that require function calling:
-
-1. Verify framework capabilities in your macOS version
-2. Test structured output support
-3. Consider alternative approaches if tool calling is unavailable
-4. Monitor Apple's documentation for updates
-
-## References
-
-- Apple TN3193: Using the Apple Intelligence APIs
-- FoundationModels Framework Documentation
-- ChatManager.swift implementation
-- `.agent-cli` configuration file
-
-## License
-
-Based on Apple's FoundationModels framework. Refer to Apple's licensing for the framework itself.
-
-## Author
-
-Created: 2026-01-12
-Based on: AppleiChat ChatManager implementation
-Framework: Apple FoundationModels
+**Built with**: FoundationModels, SwiftUI (companion app), on-device Apple Intelligence
