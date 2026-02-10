@@ -32,14 +32,9 @@ struct FetchWebContent: Tool {
     }
 
     func call(arguments: Arguments) async throws -> String {
-        // Try system path first, then relative path
-        var swiftfejsPath = "/usr/local/bin/swiftfejs"
-        
-        if !FileManager.default.fileExists(atPath: swiftfejsPath) {
-            let executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-            let dir = executableURL.deletingLastPathComponent()
-            swiftfejsPath = dir.appendingPathComponent("swiftfejs").path
-        }
+        let executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        let dir = executableURL.deletingLastPathComponent()
+        let swiftfejsPath = dir.appendingPathComponent("swiftfejs").path
 
         guard FileManager.default.fileExists(atPath: swiftfejsPath) else {
             return "Error: SwiftFejs not found at \(swiftfejsPath)"
@@ -69,240 +64,60 @@ struct FetchWebContent: Tool {
     }
 }
 
-struct SystemMonitor: Tool {
-    let name = "system_monitor"
-    let description = "Show system info: RAM, CPU, running processes"
-    
-    @Generable
-    struct Arguments {}
-    
-    func call(arguments: Arguments) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/top")
-        process.arguments = ["-l", "1", "-n", "10"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? "Error reading system info"
-    }
-}
-
 struct ListProcesses: Tool {
     let name = "list_processes"
-    let description = "List currently running processes on the system"
-    
-    @Generable
-    struct Arguments {}
-    
-    func call(arguments: Arguments) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["aux"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return output.components(separatedBy: "\n").prefix(20).joined(separator: "\n")
-    }
-}
-
-struct BashExecute: Tool {
-    let name = "bash_execute"
-    let description = "Execute a bash command and return output"
+    let description = "List currently running processes on the system, optionally filtered."
+    let parameters = ListProcessesParameters()
     
     @Generable
     struct Arguments {
-        @Guide(description: "The bash command to execute")
+    }
+    
+    func call(arguments: Arguments) async throws -> String {
+        return try await BashExecutor.shared.execute("ps aux | head -20")
+    }
+}
+
+struct ListProcessesParameters: Encodable {
+    // Schema inferred
+}
+
+
+    let name = "bash_execute"
+    let description = "Execute a safe, validated bash command and return stdout/stderr output. Supports timeout and security checks."
+    let parameters = BashExecuteParameters()
+    
+    @Generable
+    struct Arguments {
+        @Guide(description: "The bash command to execute (e.g. 'ls -la', 'pwd'). Must pass security validation.")
         let command: String
     }
     
     func call(arguments: Arguments) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", arguments.command]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        try await BashExecutor.shared.execute(arguments.command, timeoutSeconds: 10.0)
     }
 }
 
-struct ReadFile: Tool {
-    let name = "read_file"
-    let description = "Read contents of a text file"
+struct HomebrewAutorun: Tool {
+    let name = "homebrew_autorun"
+    let description = "Run Homebrew maintenance: update, upgrade all, cleanup/prune caches."
+    let parameters = HomebrewAutorunParameters()
     
     @Generable
-    struct Arguments {
-        @Guide(description: "Absolute path to the file")
-        let path: String
-    }
+    struct Arguments {}
     
     func call(arguments: Arguments) async throws -> String {
-        try String(contentsOfFile: arguments.path, encoding: .utf8)
+        try await BashExecutor.shared.execute("brew update && brew upgrade && brew cleanup 0 --prune=all", timeoutSeconds: 60.0)
     }
 }
 
-struct AnalyzeProject: Tool {
-    let name = "analyze_project"
-    let description = "Read all Swift files in a directory for analysis"
-    
-    @Generable
-    struct Arguments {
-        @Guide(description: "Directory path to analyze")
-        let path: String
-    }
-    
-    func call(arguments: Arguments) async throws -> String {
-        let files = try FileManager.default.contentsOfDirectory(atPath: arguments.path)
-            .filter { $0.hasSuffix(".swift") }
-            .prefix(10)
-        
-        return try await withThrowingTaskGroup(of: String.self) { group in
-            for file in files {
-                group.addTask {
-                    let content = try String(contentsOfFile: "\(arguments.path)/\(file)", encoding: .utf8)
-                    return "=== \(file) ===\n\(content)\n"
-                }
-            }
-            
-            var result = ""
-            for try await fileContent in group {
-                result += fileContent
-            }
-            return result
-        }
-    }
-}
+struct HomebrewAutorunParameters: Encodable {}
 
-struct EditFile: Tool {
-    let name = "edit_file"
-    let description = "Write or overwrite content to a file"
-    
-    @Generable
-    struct Arguments {
-        @Guide(description: "Absolute path to the file")
-        let path: String
-        @Guide(description: "New content to write to the file")
-        let content: String
-    }
-    
-    func call(arguments: Arguments) async throws -> String {
-        try arguments.content.write(toFile: arguments.path, atomically: true, encoding: .utf8)
-        return "File updated successfully: \(arguments.path)"
-    }
-}
 
-struct TaskState: Codable {
-    let goal: String
-    let completedSteps: [String]
-    let remainingSteps: [String]
-    let lastUpdated: String
-    let contextResets: Int
-}
 
-struct ManageTaskState: Tool {
-    let name = "manage_task_state"
-    let description = "Save or load task progress for long-running multi-step tasks"
-    
-    @Generable
-    struct Arguments {
-        @Guide(description: "Action: 'save' or 'load'")
-        let action: String
-        @Guide(description: "Task goal (required for save)")
-        let goal: String?
-        @Guide(description: "Completed steps as comma-separated string (for save)")
-        let completed: String?
-        @Guide(description: "Remaining steps as comma-separated string (for save)")
-        let remaining: String?
-    }
-    
-    func call(arguments: Arguments) async throws -> String {
-        let stateFile = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/AppleiChat/task_state.json")
-        
-        if arguments.action == "load" {
-            guard FileManager.default.fileExists(atPath: stateFile.path) else {
-                return "No saved task state found"
-            }
-            let data = try Data(contentsOf: stateFile)
-            let state = try JSONDecoder().decode(TaskState.self, from: data)
-            return """
-            Task Goal: \(state.goal)
-            Completed: \(state.completedSteps.joined(separator: ", "))
-            Remaining: \(state.remainingSteps.joined(separator: ", "))
-            Context Resets: \(state.contextResets)
-            """
-        } else if arguments.action == "save" {
-            guard let goal = arguments.goal else {
-                return "Error: goal required for save"
-            }
-            
-            let completed = arguments.completed?.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
-            let remaining = arguments.remaining?.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
-            
-            var resets = 0
-            if FileManager.default.fileExists(atPath: stateFile.path) {
-                let data = try Data(contentsOf: stateFile)
-                let oldState = try JSONDecoder().decode(TaskState.self, from: data)
-                resets = oldState.contextResets
-            }
-            
-            let state = TaskState(
-                goal: goal,
-                completedSteps: completed,
-                remainingSteps: remaining,
-                lastUpdated: ISO8601DateFormatter().string(from: Date()),
-                contextResets: resets
-            )
-            
-            try FileManager.default.createDirectory(at: stateFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(state)
-            try data.write(to: stateFile)
-            
-            return "Task state saved: \(completed.count) completed, \(remaining.count) remaining"
-        }
-        
-        return "Invalid action. Use 'save' or 'load'"
-    }
+struct FetchWebContentParameters: Encodable {
+    // Empty parameters struct - schema is inferred from Arguments
 }
-
-struct BashExecutor {
-    static let shared = BashExecutor()
-    
-    func execute(_ command: String, timeoutSeconds: Double = 10.0) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", command]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-}
-
-struct FetchWebContentParameters: Encodable {}
 
 // MARK: - Configuration
 
@@ -313,17 +128,8 @@ struct CLIConfig {
     var interactive: Bool = false
     var fetchUrl: String? = nil
     var systemInstructions: String = """
-    You are a helpful AI assistant with system access. When users ask you to perform actions:
-    - Use bash_execute for file operations, directory listings, or system commands
-    - Use fetch_web_content to retrieve and analyze web pages
-    - Use list_processes to show running processes
-    
-    For multi-step tasks:
-    - Load previous progress at start: manage_task_state(action: "load")
-    - Save progress after each major step: manage_task_state(action: "save", goal: "...", completed: "step1,step2", remaining: "step3,step4")
-    - Check saved state before starting to avoid repeating work
-    
-    Prefer taking action over explaining. Execute commands directly rather than describing how to do them.
+    You are a helpful AI assistant running in a CLI environment. Provide clear, concise answers.
+    Keep responses focused and practical. Be accurate and acknowledge uncertainty when appropriate.
     """
 
     enum ModelUseCase: String {
@@ -361,16 +167,12 @@ class AppleiCLI {
         switch availability {
         case .available:
             let fetchTool = FetchWebContent()
-            let monitorTool = SystemMonitor()
             let processTool = ListProcesses()
             let bashTool = BashExecute()
-            let readTool = ReadFile()
-            let projectTool = AnalyzeProject()
-            let editTool = EditFile()
-            let taskTool = ManageTaskState()
+            let brewTool = HomebrewAutorun()
             session = LanguageModelSession(
                 model: model,
-                tools: [fetchTool, monitorTool, processTool, bashTool, readTool, projectTool, editTool, taskTool],
+                tools: [fetchTool, processTool, bashTool, brewTool],
                 instructions: config.systemInstructions
             )
             // Prewarm session to reduce latency
@@ -412,6 +214,7 @@ class AppleiCLI {
             var fullResponse = ""
 
             for try await partial in stream {
+                // Print incrementally for streaming effect
                 if fullResponse.isEmpty {
                     print("\n", terminator: "")
                 }
@@ -420,7 +223,7 @@ class AppleiCLI {
                 print(newContent, terminator: "")
                 fflush(stdout)
 
-                fullResponse = partial.content
+                fullResponse += newContent  // Accumulate properly
             }
 
             print("\n")
@@ -512,45 +315,16 @@ class AppleiCLI {
         }
     }
 
-    private func newContextualSession(from originalSession: LanguageModelSession, keepRecent count: Int = 6) -> LanguageModelSession {
+    private func newContextualSession(from originalSession: LanguageModelSession) -> LanguageModelSession {
         let allEntries = originalSession.transcript
-        
-        guard !allEntries.isEmpty else {
-            return LanguageModelSession(
-                model: model,
-                tools: [FetchWebContent(), SystemMonitor(), ListProcesses(), BashExecute(), ReadFile(), AnalyzeProject(), EditFile(), ManageTaskState()],
-                instructions: config.systemInstructions
-            )
-        }
-        
-        // Increment context reset counter in task state
-        let stateFile = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/AppleiChat/task_state.json")
-        if FileManager.default.fileExists(atPath: stateFile.path),
-           let data = try? Data(contentsOf: stateFile),
-           var state = try? JSONDecoder().decode(TaskState.self, from: data) {
-            let updatedState = TaskState(
-                goal: state.goal,
-                completedSteps: state.completedSteps,
-                remainingSteps: state.remainingSteps,
-                lastUpdated: ISO8601DateFormatter().string(from: Date()),
-                contextResets: state.contextResets + 1
-            )
-            if let encoded = try? JSONEncoder().encode(updatedState) {
-                try? encoded.write(to: stateFile)
-            }
-        }
-        
         var condensedEntries: [Transcript.Entry] = []
-        
+
         if let first = allEntries.first {
             condensedEntries.append(first)
         }
-        
-        let recentEntries = allEntries.suffix(count)
-        if recentEntries.first != allEntries.first {
-            condensedEntries.append(contentsOf: recentEntries)
-        }
+
+        let recentEntries = allEntries.suffix(6)
+        condensedEntries.append(contentsOf: recentEntries)
 
         let condensedTranscript = Transcript(entries: condensedEntries)
         return LanguageModelSession(transcript: condensedTranscript)

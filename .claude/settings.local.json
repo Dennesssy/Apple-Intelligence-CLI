@@ -13,7 +13,16 @@
       "Bash(gh repo create:*)",
       "Bash(gh repo view:*)",
       "Bash(git remote add:*)",
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(git push:*)",
+      "Bash(ollama:*)",
+      "Bash(ollama --help:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:swiftpackageindex.com)",
+      "WebFetch(domain:ollama.ai)",
+      "WebFetch(domain:ollama.com)",
+      "Bash(swift build:*)",
+      "Bash(tee:*)"
     ]
   }
 }
